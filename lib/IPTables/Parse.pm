@@ -50,12 +50,17 @@ sub new() {
         _debug           => $args{'debug'}        || 0,
         _verbose         => $args{'verbose'}      || 0,
         _ipt_rules_file  => $args{'ipt_rules_file'}  || '',
+        _ipt_rules       => $args{'ipt_rules'}       || '',
         _ipt_exec_style  => $args{'ipt_exec_style'}  || 'waitpid',
         _ipt_exec_sleep  => $args{'ipt_exec_sleep'}  || 0,
         _sigchld_handler => $args{'sigchld_handler'} || \&REAPER,
-        _skip_ipt_exec_check => $args{'skip_ipt_exec_check'} || 0,
         _lockless_ipt_exec   => $args{'lockless_ipt_exec'}   || 0,
     };
+    $self->{_skip_ipt_exec_check} = ((exists $args{'skip_ipt_exec_check'}) ? $args{'skip_ipt_exec_check'} : ($self->{'_ipt_rules'} || $self->{'_ipt_rules_file'}));
+
+    if ($self->{'_ipt_rules'} and $self->{'_ipt_rules_file'}) {
+      croak "[*] You cannot specify both ipt_rules and ipt_rules_file";
+    }
 
     if ($self->{'_skip_ipt_exec_check'}) {  ### useful for file-only parsing
         unless ($self->{'_firewall_cmd'} or $self->{'_iptables'}) {
@@ -176,7 +181,7 @@ sub new() {
     if ($self->{'_firewall_cmd'}) {
         $self->{'_cmd'} = "$self->{'_firewall_cmd'} $self->{'_fwd_args'}";
     }
-
+#TODO -- understand this.
     unless ($self->{'_skip_ipt_exec_check'}) {
         unless ($self->{'_lockless_ipt_exec'}) {
             ### now that we have the iptables command defined, see whether
@@ -202,6 +207,37 @@ sub DESTROY {
     }
 
     return;
+}
+
+sub slurp {
+  my ($self, $filename) = @_;
+  open my $fh, '<', $filename or croak "[*] Could not open file $filename: $!";
+  my @lines =  <$fh>;
+  close $fh or carp "[*] Could not close file $filename: $!";
+  return \@lines;
+}
+
+sub ipt_lines {
+  my ($self, %arg) = @_;
+
+  $arg{table} ||= 'filter';
+  $arg{chain} ||= '';
+  my $options = " " . ($arg{opt} || '');
+  return $self->slurp($arg{file}) if $arg{file};
+
+  unless ($self->{_ipt_lines}) {
+    if ($self->{'_ipt_rules_file'}) {
+      $self->{_ipt_lines} = $self->slurp($self->{'_ipt_rules_file'});
+    } elsif ($self->{'_ipt_rules'}) {
+      $self->{_ipt_lines} = [ split "\n", $self->{'_ipt_rules'} ];
+    } else {
+      #TODO
+      my ($rv, $out_ar, $err_ar) = $self->exec_iptables("$self->{'_cmd'} -t $arg{table} -n -L $options $arg{chain}");
+      $self->{_ipt_lines} = $out_ar;
+    }
+  }
+
+  return $self->{_ipt_lines};
 }
 
 sub parse_keys() {
@@ -328,25 +364,29 @@ sub list_table_chains() {
     my $self   = shift;
     my $table  = shift || croak '[*] Specify a table, e.g. "nat"';
     my $file   = shift || '';
+    #TODO
+    my @ipt_lines = @{$self->ipt_lines(table => $table, file => $file, opt => '-v')};
 
-    my @ipt_lines = ();
     my @chains = ();
 
-    if ($self->{'_ipt_rules_file'} and not $file) {
-        $file = $self->{'_ipt_rules_file'};
-    }
+    # if ($self->{'_ipt_rules_file'} and not $file) {
+    #     $file = $self->{'_ipt_rules_file'};
+    # }
 
-    if ($file) {
-        ### read the iptables rules out of $file instead of executing
-        ### the iptables command.
-        open F, "< $file" or croak "[*] Could not open file $file: $!";
-        @ipt_lines = <F>;
-        close F;
-    } else {
-        my ($rv, $out_ar, $err_ar) = $self->exec_iptables(
-                "$self->{'_cmd'} -t $table -v -n -L");
-        @ipt_lines = @$out_ar;
-    }
+    # if ($self->{'_ipt_rules'}) {
+    #   @ipt_lines = split "\n", @{$self->{'_ipt_rules'}};
+    # }
+    # elsif ($file) {
+    #     ### read the iptables rules out of $file instead of executing
+    #     ### the iptables command.
+    #     open F, "< $file" or croak "[*] Could not open file $file: $!";
+    #     @ipt_lines = <F>;
+    #     close F;
+    # } else {
+    #     my ($rv, $out_ar, $err_ar) = $self->exec_iptables(
+    #             "$self->{'_cmd'} -t $table -v -n -L");
+    #     @ipt_lines = @$out_ar;
+    # }
 
     for (@ipt_lines) {
         if (/^\s*Chain\s(.*?)\s\(/) {
@@ -362,23 +402,23 @@ sub chain_policy() {
     my $chain  = shift || croak '[*] Specify a chain, e.g. "OUTPUT"';
     my $file   = shift || '';
 
-    my @ipt_lines = ();
+    my @ipt_lines = @{$self->ipt_lines(table => $table, chain => $chain, file => $file, opt => '-v')};
 
-    if ($self->{'_ipt_rules_file'} and not $file) {
-        $file = $self->{'_ipt_rules_file'};
-    }
+    # if ($self->{'_ipt_rules_file'} and not $file) {
+    #     $file = $self->{'_ipt_rules_file'};
+    # }
 
-    if ($file) {
-        ### read the iptables rules out of $file instead of executing
-        ### the iptables command.
-        open F, "< $file" or croak "[*] Could not open file $file: $!";
-        @ipt_lines = <F>;
-        close F;
-    } else {
-        my ($rv, $out_ar, $err_ar) = $self->exec_iptables(
-                "$self->{'_cmd'} -t $table -v -n -L $chain");
-        @ipt_lines = @$out_ar;
-    }
+    # if ($file) {
+    #     ### read the iptables rules out of $file instead of executing
+    #     ### the iptables command.
+    #     open F, "< $file" or croak "[*] Could not open file $file: $!";
+    #     @ipt_lines = <F>;
+    #     close F;
+    # } else {
+    #     my ($rv, $out_ar, $err_ar) = $self->exec_iptables(
+    #             "$self->{'_cmd'} -t $table -v -n -L $chain");
+    #     @ipt_lines = @$out_ar;
+    # }
 
     my $policy = '';
 
@@ -404,7 +444,7 @@ sub chain_rules() {
     my $file   = shift || '';
 
     my $found_chain  = 0;
-    my @ipt_lines = ();
+    my @ipt_lines = @{$self->ipt_lines(table => $table, chain => $chain, file => $file, opt => '-v --line-numbers')};
 
     my $fh = *STDERR;
     $fh = *STDOUT if $self->{'_verbose'};
@@ -416,21 +456,23 @@ sub chain_rules() {
     my @chain = ();
     my @global_accept_state = ();
 
-    if ($self->{'_ipt_rules_file'} and not $file) {
-        $file = $self->{'_ipt_rules_file'};
-    }
+#TODO -- this one passes --line-numbers!
+    
+    # if ($self->{'_ipt_rules_file'} and not $file) {
+    #     $file = $self->{'_ipt_rules_file'};
+    # }
 
-    if ($file) {
-        ### read the iptables rules out of $file instead of executing
-        ### the iptables command.
-        open F, "< $file" or croak "[*] Could not open file $file: $!";
-        @ipt_lines = <F>;
-        close F;
-    } else {
-        my ($rv, $out_ar, $err_ar) = $self->exec_iptables(
-                "$self->{'_cmd'} -t $table -v -n -L $chain --line-numbers");
-        @ipt_lines = @$out_ar;
-    }
+    # if ($file) {
+    #     ### read the iptables rules out of $file instead of executing
+    #     ### the iptables command.
+    #     open F, "< $file" or croak "[*] Could not open file $file: $!";
+    #     @ipt_lines = <F>;
+    #     close F;
+    # } else {
+    #     my ($rv, $out_ar, $err_ar) = $self->exec_iptables(
+    #             "$self->{'_cmd'} -t $table -v -n -L $chain --line-numbers");
+    #     @ipt_lines = @$out_ar;
+    # }
 
     ### determine the output style (e.g. "-nL -v" or just plain "-nL"; if the
     ### policy data came from a file then -v might not have been used)
@@ -637,25 +679,24 @@ sub default_drop() {
     my $table = shift || croak "[*] Specify a table, e.g. \"nat\"";
     my $chain = shift || croak "[*] Specify a chain, e.g. \"OUTPUT\"";
     my $file  = shift || '';
-
-    my @ipt_lines = ();
-
-    if ($self->{'_ipt_rules_file'} and not $file) {
-        $file = $self->{'_ipt_rules_file'};
-    }
-
-    if ($file) {
-        ### read the iptables rules out of $file instead of executing
-        ### the iptables command.
-        open F, "< $file" or croak "[*] Could not open file $file: $!";
-        @ipt_lines = <F>;
-        close F;
-    } else {
 ### FIXME -v for interfaces?
-        my ($rv, $out_ar, $err_ar) = $self->exec_iptables(
-                "$self->{'_cmd'} -t $table -n -L $chain");
-        @ipt_lines = @$out_ar;
-    }
+    my @ipt_lines = @{$self->ipt_lines(table => $table, chain => $chain, file => $file)};
+#     if ($self->{'_ipt_rules_file'} and not $file) {
+#         $file = $self->{'_ipt_rules_file'};
+#     }
+
+#     if ($file) {
+#         ### read the iptables rules out of $file instead of executing
+#         ### the iptables command.
+#         open F, "< $file" or croak "[*] Could not open file $file: $!";
+#         @ipt_lines = <F>;
+#         close F;
+#     } else {
+# ### FIXME -v for interfaces?
+#         my ($rv, $out_ar, $err_ar) = $self->exec_iptables(
+#                 "$self->{'_cmd'} -t $table -n -L $chain");
+#         @ipt_lines = @$out_ar;
+#     }
 
     return "[-] Could not get $self->{'_ipt_bin_name'} output!", 0
         unless @ipt_lines;
@@ -745,29 +786,29 @@ sub default_log() {
     my $file  = shift || '';
 
     my $any_ip_re  = qr/(?:0\.){3}0\x2f0|\x3a{2}\x2f0/;
-    my @ipt_lines  = ();
+    my @ipt_lines = @{$self->ipt_lines(table => $table, chain => $chain, file => $file)};
     my %log_chains = ();
     my %log_rules  = ();
 
-    if ($self->{'_ipt_rules_file'} and not $file) {
-        $file = $self->{'_ipt_rules_file'};
-    }
-
-    ### note that we are not restricting the view to the current chain
-    ### with the iptables -nL output; we are going to parse the given
-    ### chain and all chains to which packets are jumped from the given
-    ### chain.
-    if ($file) {
-        ### read the iptables rules out of $file instead of executing
-        ### the iptables command.
-        open F, "< $file" or croak "[*] Could not open file $file: $!";
-        @ipt_lines = <F>;
-        close F;
-    } else {
-        my ($rv, $out_ar, $err_ar) = $self->exec_iptables(
-                "$self->{'_cmd'} -t $table -n -L $chain");
-        @ipt_lines = @$out_ar;
-    }
+    # if ($self->{'_ipt_rules_file'} and not $file) {
+    #     $file = $self->{'_ipt_rules_file'};
+    # }
+# TODO this one doesn't have -v
+    # ### note that we are not restricting the view to the current chain
+    # ### with the iptables -nL output; we are going to parse the given
+    # ### chain and all chains to which packets are jumped from the given
+    # ### chain.
+    # if ($file) {
+    #     ### read the iptables rules out of $file instead of executing
+    #     ### the iptables command.
+    #     open F, "< $file" or croak "[*] Could not open file $file: $!";
+    #     @ipt_lines = <F>;
+    #     close F;
+    # } else {
+    #     my ($rv, $out_ar, $err_ar) = $self->exec_iptables(
+    #             "$self->{'_cmd'} -t $table -n -L $chain");
+    #     @ipt_lines = @$out_ar;
+    # }
 
     ### determine the output style (e.g. "-nL -v" or just plain "-nL"; if the
     ### policy data came from a file then -v might not have been used)
